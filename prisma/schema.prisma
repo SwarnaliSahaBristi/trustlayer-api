@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -10,4 +5,115 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum ScanStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum FindingStatus {
+  OPEN
+  RESOLVED
+  IGNORED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String?
+  name      String?
+  avatarUrl String?
+
+  role      UserRole @default(USER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  githubConnection GitHubConnection?
+  repositories     Repository[]
+  scans            Scan[]
+}
+
+model GitHubConnection {
+  id           String   @id @default(cuid())
+  githubUserId String   @unique
+  accessToken  String
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Repository {
+  id         String   @id @default(cuid())
+  githubId   String   @unique
+  name       String
+  fullName   String
+  url        String
+  private    Boolean  @default(false)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  scans     Scan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Scan {
+  id           String     @id @default(cuid())
+  status       ScanStatus @default(PENDING)
+  riskScore    Int?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  findings     Finding[]
+
+  createdAt    DateTime @default(now())
+}
+
+model Finding {
+  id          String        @id @default(cuid())
+  title       String
+  description String
+  severity    Severity
+  status      FindingStatus @default(OPEN)
+
+  filePath    String?
+  lineNumber  Int?
+  codeSnippet String?
+
+  aiExplanation String?
+  aiSuggestion  String?
+
+  scanId String
+  scan   Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
