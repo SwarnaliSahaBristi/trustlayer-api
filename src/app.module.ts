@@ -6,6 +6,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { GithubModule } from './github/github.module';
 import { RepositoriesModule } from './repositories/repositories.module';
+import { ScansModule } from './scans/scans.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { RepositoriesModule } from './repositories/repositories.module';
     AuthModule,
     GithubModule,
     RepositoriesModule,
+    ScansModule,
   ],
   controllers: [AppController],
   providers: [AppService],
