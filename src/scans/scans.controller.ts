@@ -1,7 +1,9 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -37,7 +39,7 @@ export class ScansController {
 
   /**
    * GET /scans/:scanId
-   * Get real-time status, risk score, and findings of a scan
+   * Get real-time status, risk score, and deep findings of a scan
    */
   @Get(':scanId')
   async getScanById(
@@ -57,5 +59,18 @@ export class ScansController {
     @Param('repositoryId') repositoryId: string,
   ) {
     return this.scansService.getScansByRepository(userId, repositoryId);
+  }
+
+  /**
+   * PATCH /scans/findings/:findingId/status
+   * Mark a finding as RESOLVED or IGNORED
+   */
+  @Patch('findings/:findingId/status')
+  async updateFindingStatus(
+    @GetUser('id') userId: string,
+    @Param('findingId') findingId: string,
+    @Body('status') status: 'OPEN' | 'RESOLVED' | 'IGNORED',
+  ) {
+    return this.scansService.updateFindingStatus(userId, findingId, status);
   }
 }

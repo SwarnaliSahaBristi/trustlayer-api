@@ -1,11 +1,11 @@
 import {
   BadRequestException,
   Injectable,
-  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SecurityEngine, SecurityFinding } from './security.engine';
 
 @Injectable()
 export class ScansService {
@@ -38,7 +38,7 @@ export class ScansService {
       );
     }
 
-    // Check if there is already a scan RUNNING or PENDING for this repository
+    // Check for active pending/running scan
     const activeScan = await this.prisma.scan.findFirst({
       where: {
         repositoryId,
@@ -62,12 +62,17 @@ export class ScansService {
       },
     });
 
-    // Start background asynchronous scan execution
-    this.processBackgroundScan(scan.id, repository, repository.user.githubConnection.accessToken).catch(
-      (err) => {
-        this.logger.error(`Background scan failed unexpectedly for scanId ${scan.id}: ${err.message}`, err.stack);
-      },
-    );
+    // Start background asynchronous scan
+    this.processBackgroundScan(
+      scan.id,
+      repository,
+      repository.user.githubConnection.accessToken,
+    ).catch((err) => {
+      this.logger.error(
+        `Background scan failed for scanId ${scan.id}: ${err.message}`,
+        err.stack,
+      );
+    });
 
     return {
       message: 'Scan triggered successfully',
@@ -76,16 +81,15 @@ export class ScansService {
   }
 
   /**
-   * 2. Background worker processing logic
+   * 2. Background worker processing logic with Step 6 Security Analysis
    */
   private async processBackgroundScan(
     scanId: string,
-    repository: { id: string; fullName: string; defaultBranch?: string },
+    repository: { id: string; fullName: string },
     accessToken: string,
   ) {
     this.logger.log(`Starting scan ${scanId} for ${repository.fullName}`);
 
-    // Update status to RUNNING
     await this.prisma.scan.update({
       where: { id: scanId },
       data: {
@@ -95,16 +99,38 @@ export class ScansService {
     });
 
     try {
-      // Step A: Fetch files tree from GitHub API
+      // Step A: Fetch full file tree from GitHub API
       const files = await this.fetchRepositoryFiles(repository.fullName, accessToken);
 
-      // Step B: Security inspections (Secrets, Dependencies, Static Analysis)
-      const findings = await this.performSecurityScan(repository.fullName, files, accessToken);
+      // Step B: Content fetcher closure with error-handling and caching
+      const getFileContent = async (path: string): Promise<string | null> => {
+        try {
+          const res = await fetch(
+            `https://api.github.com/repos/${repository.fullName}/contents/${path}`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/vnd.github.raw',
+              },
+            },
+          );
+          if (!res.ok) return null;
+          return await res.text();
+        } catch {
+          return null;
+        }
+      };
 
-      // Step C: Calculate Risk Score (0-100)
+      // Step C: Execute SecurityEngine (Secret Detection + Dependency Audit + SAST)
+      const findings: SecurityFinding[] = await SecurityEngine.analyzeRepository(
+        files,
+        getFileContent,
+      );
+
+      // Step D: Calculate aggregate Risk Score (0-100)
       const riskScore = this.calculateRiskScore(findings);
 
-      // Step D: Save findings into database
+      // Step E: Store findings in database
       if (findings.length > 0) {
         await this.prisma.finding.createMany({
           data: findings.map((f) => ({
@@ -120,7 +146,7 @@ export class ScansService {
         });
       }
 
-      // Step E: Complete the scan
+      // Step F: Mark scan as COMPLETED
       await this.prisma.scan.update({
         where: { id: scanId },
         data: {
@@ -130,7 +156,9 @@ export class ScansService {
         },
       });
 
-      this.logger.log(`Scan ${scanId} completed with score ${riskScore} and ${findings.length} findings.`);
+      this.logger.log(
+        `Scan ${scanId} completed. Risk Score: ${riskScore}, Findings count: ${findings.length}`,
+      );
     } catch (error: any) {
       this.logger.error(`Scan ${scanId} failed: ${error.message}`, error.stack);
       await this.prisma.scan.update({
@@ -145,12 +173,12 @@ export class ScansService {
   }
 
   /**
-   * Helper: Fetch repository file tree via GitHub Trees API
+   * Helper: Fetch file tree via GitHub API
    */
   private async fetchRepositoryFiles(
     fullName: string,
     accessToken: string,
-  ): Promise<Array<{ path: string; type: string; sha: string }>> {
+  ): Promise<Array<{ path: string; sha: string }>> {
     const res = await fetch(
       `https://api.github.com/repos/${fullName}/git/trees/HEAD?recursive=1`,
       {
@@ -162,106 +190,24 @@ export class ScansService {
       },
     );
 
-    if (!res.ok) {
-      // Fallback: If repo is empty or HEAD not found
-      return [];
-    }
+    if (!res.ok) return [];
 
     const data = await res.json();
-    return (data.tree || []).filter((item: any) => item.type === 'blob');
+    return (data.tree || [])
+      .filter((item: any) => item.type === 'blob')
+      .map((item: any) => ({ path: item.path, sha: item.sha }));
   }
 
   /**
-   * Helper: Performs light initial security checks on filenames & high-risk configs
-   */
-  private async performSecurityScan(
-    fullName: string,
-    files: Array<{ path: string; type: string; sha: string }>,
-    accessToken: string,
-  ) {
-    const findings: Array<{
-      title: string;
-      description: string;
-      severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
-      filePath: string;
-      lineNumber?: number;
-      codeSnippet?: string;
-    }> = [];
-
-    for (const file of files) {
-      const lower = file.path.toLowerCase();
-
-      // 1. Secret / Sensitive File Leaks
-      if (
-        lower.endsWith('.env') ||
-        lower.includes('.env.production') ||
-        lower.includes('.env.local') ||
-        lower.endsWith('.pem') ||
-        lower.endsWith('.key') ||
-        lower.endsWith('id_rsa')
-      ) {
-        findings.push({
-          title: 'Exposed Sensitive File or Key',
-          description: `Sensitive environment or key file '${file.path}' is committed into repository.`,
-          severity: 'CRITICAL',
-          filePath: file.path,
-          lineNumber: 1,
-        });
-      }
-
-      // 2. Weak Configuration or Docker configs
-      if (lower.endsWith('docker-compose.yml') || lower.endsWith('docker-compose.yaml')) {
-        findings.push({
-          title: 'Docker Compose Configuration Review',
-          description: `Ensure passwords, secrets and exposed ports in '${file.path}' are properly managed via secret managers.`,
-          severity: 'LOW',
-          filePath: file.path,
-          lineNumber: 1,
-        });
-      }
-
-      // Limit deep checks to key config files like package.json or sample configs
-      if (file.path === 'package.json') {
-        try {
-          const contentRes = await fetch(
-            `https://api.github.com/repos/${fullName}/contents/${file.path}`,
-            {
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: 'application/vnd.github.raw',
-              },
-            },
-          );
-          if (contentRes.ok) {
-            const text = await contentRes.text();
-            if (text.includes('"jsonwebtoken"') && !text.includes('helmet')) {
-              findings.push({
-                title: 'Missing Security Headers (Helmet)',
-                description: 'API uses JWT authentication but does not seem to include Helmet for HTTP security headers.',
-                severity: 'MEDIUM',
-                filePath: file.path,
-              });
-            }
-          }
-        } catch (e) {
-          // ignore content fetch error
-        }
-      }
-    }
-
-    return findings;
-  }
-
-  /**
-   * Calculate Risk Score (0 = Clean, 100 = Critical Danger)
+   * Calculate Risk Score (0 = Secure, 100 = Highly Insecure)
    */
   private calculateRiskScore(findings: Array<{ severity: string }>): number {
     if (findings.length === 0) return 0;
 
     let score = 0;
     for (const f of findings) {
-      if (f.severity === 'CRITICAL') score += 40;
-      else if (f.severity === 'HIGH') score += 25;
+      if (f.severity === 'CRITICAL') score += 35;
+      else if (f.severity === 'HIGH') score += 20;
       else if (f.severity === 'MEDIUM') score += 10;
       else if (f.severity === 'LOW') score += 5;
     }
@@ -270,7 +216,7 @@ export class ScansService {
   }
 
   /**
-   * 3. Get single scan status and details
+   * 3. Get single scan status and all findings
    */
   async getScanById(userId: string, scanId: string) {
     const scan = await this.prisma.scan.findFirst({
@@ -331,6 +277,31 @@ export class ScansService {
           select: { findings: true },
         },
       },
+    });
+  }
+
+  /**
+   * 6. Update status of a specific finding (e.g. RESOLVED or IGNORED)
+   */
+  async updateFindingStatus(
+    userId: string,
+    findingId: string,
+    status: 'OPEN' | 'RESOLVED' | 'IGNORED',
+  ) {
+    const finding = await this.prisma.finding.findFirst({
+      where: {
+        id: findingId,
+        scan: { userId },
+      },
+    });
+
+    if (!finding) {
+      throw new NotFoundException('Finding not found');
+    }
+
+    return this.prisma.finding.update({
+      where: { id: findingId },
+      data: { status },
     });
   }
 }
