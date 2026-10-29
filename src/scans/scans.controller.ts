@@ -73,4 +73,16 @@ export class ScansController {
   ) {
     return this.scansService.updateFindingStatus(userId, findingId, status);
   }
+
+  /**
+   * POST /scans/findings/:findingId/ai-explain
+   * Generate or re-generate AI explanation and suggestions for a specific finding
+   */
+  @Post('findings/:findingId/ai-explain')
+  async explainFinding(
+    @GetUser('id') userId: string,
+    @Param('findingId') findingId: string,
+  ) {
+    return this.scansService.explainFindingOnDemand(userId, findingId);
+  }
 }

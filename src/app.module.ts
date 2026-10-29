@@ -7,6 +7,8 @@ import { AuthModule } from './auth/auth.module';
 import { GithubModule } from './github/github.module';
 import { RepositoriesModule } from './repositories/repositories.module';
 import { ScansModule } from './scans/scans.module';
+import { AiModule } from './ai/ai.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { ScansModule } from './scans/scans.module';
     GithubModule,
     RepositoriesModule,
     ScansModule,
+    AiModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -6,12 +6,16 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecurityEngine, SecurityFinding } from './security.engine';
+import { AiService } from '../ai/ai.service';
 
 @Injectable()
 export class ScansService {
   private readonly logger = new Logger(ScansService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiService: AiService,
+  ) {}
 
   /**
    * 1. Trigger / Request a new Scan for a repository
@@ -81,7 +85,7 @@ export class ScansService {
   }
 
   /**
-   * 2. Background worker processing logic with Step 6 Security Analysis
+   * 2. Background worker processing logic with SecurityEngine and AI Explanation
    */
   private async processBackgroundScan(
     scanId: string,
@@ -130,10 +134,19 @@ export class ScansService {
       // Step D: Calculate aggregate Risk Score (0-100)
       const riskScore = this.calculateRiskScore(findings);
 
-      // Step E: Store findings in database
-      if (findings.length > 0) {
-        await this.prisma.finding.createMany({
-          data: findings.map((f) => ({
+      // Step E: Store findings in database with initial heuristic or AI explanations
+      for (const f of findings) {
+        const aiResult = await this.aiService.explainFinding({
+          title: f.title,
+          description: f.description,
+          severity: f.severity,
+          filePath: f.filePath,
+          lineNumber: f.lineNumber,
+          codeSnippet: f.codeSnippet,
+        });
+
+        await this.prisma.finding.create({
+          data: {
             scanId,
             title: f.title,
             description: f.description,
@@ -141,8 +154,10 @@ export class ScansService {
             filePath: f.filePath,
             lineNumber: f.lineNumber,
             codeSnippet: f.codeSnippet,
+            aiExplanation: aiResult.explanation,
+            aiSuggestion: aiResult.suggestion,
             status: 'OPEN',
-          })),
+          },
         });
       }
 
@@ -302,6 +317,32 @@ export class ScansService {
     return this.prisma.finding.update({
       where: { id: findingId },
       data: { status },
+    });
+  }
+
+  /**
+   * 7. Trigger on-demand AI explanation for a finding
+   */
+  async explainFindingOnDemand(userId: string, findingId: string) {
+    const finding = await this.prisma.finding.findFirst({
+      where: {
+        id: findingId,
+        scan: { userId },
+      },
+    });
+
+    if (!finding) {
+      throw new NotFoundException('Finding not found');
+    }
+
+    const aiResult = await this.aiService.explainFinding(finding);
+
+    return this.prisma.finding.update({
+      where: { id: findingId },
+      data: {
+        aiExplanation: aiResult.explanation,
+        aiSuggestion: aiResult.suggestion,
+      },
     });
   }
 }
