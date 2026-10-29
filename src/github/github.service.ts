@@ -1,19 +1,20 @@
-
 import {
   Injectable,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class GithubService {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   getAuthorizationUrl(state: string): string {
     const clientId = this.config.get<string>('GITHUB_CLIENT_ID');
-    const callbackUrl = this.config.get<string>(
-      'GITHUB_CALLBACK_URL',
-    );
+    const callbackUrl = this.config.get<string>('GITHUB_CALLBACK_URL');
 
     if (!clientId || !callbackUrl) {
       throw new InternalServerErrorException(
@@ -25,19 +26,16 @@ export class GithubService {
       client_id: clientId,
       redirect_uri: callbackUrl,
       state,
+      scope: 'read:user user:email repo',
     });
 
     return `https://github.com/login/oauth/authorize?${params.toString()}`;
   }
 
-  async exchangeCode(code: string) {
+  async exchangeCode(code: string): Promise<string> {
     const clientId = this.config.get<string>('GITHUB_CLIENT_ID');
-    const clientSecret = this.config.get<string>(
-      'GITHUB_CLIENT_SECRET',
-    );
-    const callbackUrl = this.config.get<string>(
-      'GITHUB_CALLBACK_URL',
-    );
+    const clientSecret = this.config.get<string>('GITHUB_CLIENT_SECRET');
+    const callbackUrl = this.config.get<string>('GITHUB_CALLBACK_URL');
 
     if (!clientId || !clientSecret || !callbackUrl) {
       throw new InternalServerErrorException(
@@ -66,7 +64,7 @@ export class GithubService {
 
     if (!response.ok || data.error || !data.access_token) {
       throw new InternalServerErrorException(
-        'GitHub authorization failed',
+        data.error_description || 'GitHub authorization failed',
       );
     }
 
@@ -78,7 +76,7 @@ export class GithubService {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2026-03-10',
+        'X-GitHub-Api-Version': '2022-11-28',
       },
     });
 
@@ -89,5 +87,69 @@ export class GithubService {
     }
 
     return response.json();
+  }
+
+  async saveGitHubConnection(
+    userId: string,
+    githubUser: { id: number | string; login: string; avatar_url?: string },
+    accessToken: string,
+  ) {
+    const githubUserId = String(githubUser.id);
+
+    // Save or update GitHubConnection for the authenticated TrustLayer user
+    const connection = await this.prisma.gitHubConnection.upsert({
+      where: { userId },
+      update: {
+        githubUserId,
+        accessToken,
+      },
+      create: {
+        userId,
+        githubUserId,
+        accessToken,
+      },
+    });
+
+    // Optionally update user's avatar if not set
+    if (githubUser.avatar_url) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          avatarUrl: githubUser.avatar_url,
+        },
+      });
+    }
+
+    return {
+      connected: true,
+      githubUserId: connection.githubUserId,
+      githubLogin: githubUser.login,
+      avatarUrl: githubUser.avatar_url,
+    };
+  }
+
+  async getConnectionStatus(userId: string) {
+    const connection = await this.prisma.gitHubConnection.findUnique({
+      where: { userId },
+      select: {
+        id: true,
+        githubUserId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      isConnected: !!connection,
+      connection,
+    };
+  }
+
+  async disconnect(userId: string) {
+    await this.prisma.gitHubConnection.deleteMany({
+      where: { userId },
+    });
+
+    return { message: 'GitHub disconnected successfully' };
   }
 }
