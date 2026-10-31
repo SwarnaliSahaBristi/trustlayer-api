@@ -4,12 +4,14 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { EncryptionService } from '../common/encryption.service';
 
 @Injectable()
 export class GithubService {
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly encryption: EncryptionService,
   ) {}
 
   getAuthorizationUrl(state: string): string {
@@ -96,21 +98,22 @@ export class GithubService {
   ) {
     const githubUserId = String(githubUser.id);
 
-    // Save or update GitHubConnection for the authenticated TrustLayer user
+    // 🔒 Security Hardening: Encrypt token at rest using AES-256-GCM before DB persistence
+    const encryptedToken = this.encryption.encrypt(accessToken);
+
     const connection = await this.prisma.gitHubConnection.upsert({
       where: { userId },
       update: {
         githubUserId,
-        accessToken,
+        accessToken: encryptedToken,
       },
       create: {
         userId,
         githubUserId,
-        accessToken,
+        accessToken: encryptedToken,
       },
     });
 
-    // Optionally update user's avatar if not set
     if (githubUser.avatar_url) {
       await this.prisma.user.update({
         where: { id: userId },
