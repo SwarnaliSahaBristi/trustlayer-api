@@ -6,10 +6,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ImportRepositoryDto } from './dto/import-repository.dto';
+import { EncryptionService } from '../common/encryption.service';
 
 @Injectable()
 export class RepositoriesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly encryption: EncryptionService,
+  ) {}
 
   /**
    * 1. Get list of repositories directly from user's connected GitHub account
@@ -25,11 +29,14 @@ export class RepositoriesService {
       );
     }
 
+    // 🔒 Decrypt access token securely before calling external GitHub API
+    const plainAccessToken = this.encryption.decrypt(connection.accessToken);
+
     const response = await fetch(
       'https://api.github.com/user/repos?sort=updated&per_page=100',
       {
         headers: {
-          Authorization: `Bearer ${connection.accessToken}`,
+          Authorization: `Bearer ${plainAccessToken}`,
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
         },
@@ -48,52 +55,41 @@ export class RepositoriesService {
       select: { githubId: true, id: true },
     });
 
-    const importedMap = new Map(
-      importedRepos.map((r) => [r.githubId, r.id]),
-    );
+    const importedIds = new Set(importedRepos.map((r) => r.githubId));
 
     return repos.map((repo: any) => ({
-      githubId: String(repo.id),
+      id: String(repo.id),
       name: repo.name,
       fullName: repo.full_name,
       url: repo.html_url,
-      cloneUrl: repo.clone_url,
-      defaultBranch: repo.default_branch,
       private: repo.private,
+      isImported: importedIds.has(String(repo.id)),
+      defaultBranch: repo.default_branch,
       description: repo.description,
       language: repo.language,
-      isImported: importedMap.has(String(repo.id)),
-      importedRepoId: importedMap.get(String(repo.id)) || null,
       updatedAt: repo.updated_at,
     }));
   }
 
   /**
-   * 2. Import a GitHub repository into TrustLayer database
+   * 2. Import a selected repository into TrustLayer database
    */
   async importRepository(userId: string, dto: ImportRepositoryDto) {
-    const githubId = String(dto.githubId);
-
-    // Check if repo with this githubId already exists
-    const existing = await this.prisma.repository.findUnique({
-      where: { githubId },
+    // Check if already imported by this user
+    const existing = await this.prisma.repository.findFirst({
+      where: {
+        userId,
+        githubId: dto.githubId,
+      },
     });
 
     if (existing) {
-      if (existing.userId === userId) {
-        return {
-          message: 'Repository is already imported',
-          repository: existing,
-        };
-      }
-      throw new ConflictException(
-        'This repository has already been imported by another user',
-      );
+      throw new ConflictException('Repository is already imported');
     }
 
     const repository = await this.prisma.repository.create({
       data: {
-        githubId,
+        githubId: dto.githubId,
         name: dto.name,
         fullName: dto.fullName,
         url: dto.url,
@@ -102,33 +98,43 @@ export class RepositoriesService {
       },
     });
 
-    return {
-      message: 'Repository imported successfully',
-      repository,
-    };
+    return repository;
   }
 
   /**
-   * 3. Get all repositories imported by the current user in TrustLayer
+   * 3. Lists all repositories imported in TrustLayer by the authenticated user
    */
   async getUserRepositories(userId: string) {
     return this.prisma.repository.findMany({
       where: { userId },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { createdAt: 'desc' },
       include: {
-        _count: {
-          select: { scans: true },
+        scans: {
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            riskScore: true,
+            createdAt: true,
+            _count: {
+              select: { findings: true },
+            },
+          },
         },
       },
     });
   }
 
   /**
-   * 4. Get a single repository details by ID
+   * 4. Get detailed repository details by ID
    */
-  async getRepositoryById(userId: string, id: string) {
+  async getRepositoryById(userId: string, repositoryId: string) {
     const repository = await this.prisma.repository.findFirst({
-      where: { id, userId },
+      where: {
+        id: repositoryId,
+        userId,
+      },
       include: {
         scans: {
           orderBy: { createdAt: 'desc' },
@@ -145,23 +151,24 @@ export class RepositoriesService {
   }
 
   /**
-   * 5. Remove/delete an imported repository
+   * 5. Remove an imported repository
    */
-  async deleteRepository(userId: string, id: string) {
-    const repo = await this.prisma.repository.findFirst({
-      where: { id, userId },
+  async deleteRepository(userId: string, repositoryId: string) {
+    const repository = await this.prisma.repository.findFirst({
+      where: {
+        id: repositoryId,
+        userId,
+      },
     });
 
-    if (!repo) {
+    if (!repository) {
       throw new NotFoundException('Repository not found');
     }
 
     await this.prisma.repository.delete({
-      where: { id },
+      where: { id: repositoryId },
     });
 
-    return {
-      message: 'Repository deleted successfully',
-    };
+    return { message: 'Repository removed successfully' };
   }
 }

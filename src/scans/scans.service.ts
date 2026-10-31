@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { SecurityEngine, SecurityFinding } from './security.engine';
 import { AiService } from '../ai/ai.service';
+import { EncryptionService } from '../common/encryption.service';
 
 @Injectable()
 export class ScansService {
@@ -15,6 +16,7 @@ export class ScansService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiService: AiService,
+    private readonly encryption: EncryptionService,
   ) {}
 
   /**
@@ -66,11 +68,16 @@ export class ScansService {
       },
     });
 
+    // Decrypt access token securely
+    const plainAccessToken = this.encryption.decrypt(
+      repository.user.githubConnection.accessToken,
+    );
+
     // Start background asynchronous scan
     this.processBackgroundScan(
       scan.id,
       repository,
-      repository.user.githubConnection.accessToken,
+      plainAccessToken,
     ).catch((err) => {
       this.logger.error(
         `Background scan failed for scanId ${scan.id}: ${err.message}`,
