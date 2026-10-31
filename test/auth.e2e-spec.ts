@@ -83,7 +83,7 @@ describe('Auth System (e2e)', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(200)
       .expect((res) => {
-        expect(res.body.email).toBe(testUser.email);
+        expect(res.body.user.email).toBe(testUser.email);
       });
   });
 
