@@ -408,4 +408,31 @@ export class ScansService {
       },
     });
   }
+
+  /**
+   * 8. Fix Verification / Rescan Repository:
+   * Triggers a new scan and automatically verifies if previous OPEN issues were resolved.
+   */
+  async rescanRepository(userId: string, repositoryId: string) {
+    const previousOpenFindings = await this.prisma.finding.findMany({
+      where: {
+        scan: { repositoryId, userId },
+        status: 'OPEN',
+      },
+      select: {
+        id: true,
+        title: true,
+        filePath: true,
+        lineNumber: true,
+      },
+    });
+
+    const triggerResult = await this.triggerScan(userId, repositoryId);
+
+    return {
+      message: 'Fix verification & rescan initiated',
+      scan: triggerResult.scan,
+      previousOpenCount: previousOpenFindings.length,
+    };
+  }
 }

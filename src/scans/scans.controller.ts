@@ -85,4 +85,16 @@ export class ScansController {
   ) {
     return this.scansService.explainFindingOnDemand(userId, findingId);
   }
+
+  /**
+   * POST /scans/repository/:repositoryId/rescan
+   * Fix verification & rescan repository
+   */
+  @Post('repository/:repositoryId/rescan')
+  async rescanRepository(
+    @GetUser('id') userId: string,
+    @Param('repositoryId') repositoryId: string,
+  ) {
+    return this.scansService.rescanRepository(userId, repositoryId);
+  }
 }
