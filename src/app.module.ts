@@ -1,7 +1,6 @@
-import { BullModule } from '@nestjs/bullmq';
-import { ConfigService } from '@nestjs/config';
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
@@ -16,6 +15,9 @@ import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -26,9 +28,6 @@ import { DashboardModule } from './dashboard/dashboard.module';
           tls: config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
         },
       }),
-    }),
-    ConfigModule.forRoot({
-      isGlobal: true,
     }),
     // 🛡️ Rate Limiting: 60 seconds এ সর্বোচ্চ 100 টি রিকোয়েস্ট (DoS/Brute-force protection)
     ThrottlerModule.forRoot([

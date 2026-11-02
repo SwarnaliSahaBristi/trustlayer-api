@@ -8,12 +8,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SecurityEngine, SecurityFinding } from './security.engine';
 import { AiService } from '../ai/ai.service';
 import { EncryptionService } from '../common/encryption.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 @Injectable()
 export class ScansService {
   private readonly logger = new Logger(ScansService.name);
 
   constructor(
+    @InjectQueue('scan-queue') private readonly scanQueue: Queue,
     private readonly prisma: PrismaService,
     private readonly aiService: AiService,
     private readonly encryption: EncryptionService,
@@ -68,36 +71,74 @@ export class ScansService {
       },
     });
 
-    // Decrypt access token securely
-    const plainAccessToken = this.encryption.decrypt(
-      repository.user.githubConnection.accessToken,
+    // 🚀 BullMQ Queue-তে Job যোগ করা (Background job processing with Retry & Timeout)
+    await this.scanQueue.add(
+      'execute-scan',
+      {
+        scanId: scan.id,
+        repositoryId,
+        userId,
+      },
+      {
+        attempts: 3, // Retry mechanism: ৩ বার চেষ্টা করবে
+        backoff: {
+          type: 'exponential',
+          delay: 5000, // ফেইল করলে ৫ সেকেন্ড পর রিট্রাই
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
     );
 
-    // Start background asynchronous scan
-    this.processBackgroundScan(
-      scan.id,
-      repository,
-      plainAccessToken,
-    ).catch((err) => {
-      this.logger.error(
-        `Background scan failed for scanId ${scan.id}: ${err.message}`,
-        err.stack,
-      );
-    });
-
     return {
-      message: 'Scan triggered successfully',
+      message: 'Scan triggered and queued successfully',
       scan,
     };
   }
 
   /**
-   * 2. Background worker processing logic with SecurityEngine and AI Explanation
+   * 2. BullMQ Worker execution entrypoint
+   */
+  async executeScanJob(job: { data: { scanId: string; repositoryId: string; userId: string }; updateProgress: (progress: number) => Promise<void> }) {
+    const { scanId, repositoryId, userId } = job.data;
+    const repository = await this.prisma.repository.findFirst({
+      where: { id: repositoryId, userId },
+      include: {
+        user: {
+          include: {
+            githubConnection: true,
+          },
+        },
+      },
+    });
+
+    if (!repository || !repository.user.githubConnection?.accessToken) {
+      await this.prisma.scan.update({
+        where: { id: scanId },
+        data: {
+          status: 'FAILED',
+          errorMessage: 'Repository or GitHub connection not available',
+          completedAt: new Date(),
+        },
+      });
+      return;
+    }
+
+    const plainAccessToken = this.encryption.decrypt(
+      repository.user.githubConnection.accessToken,
+    );
+
+    await this.processBackgroundScan(scanId, repository, plainAccessToken, job.updateProgress);
+  }
+
+  /**
+   * 3. Background worker processing logic with SecurityEngine and AI Explanation
    */
   private async processBackgroundScan(
     scanId: string,
-    repository: { id: string; fullName: string },
+    repository: { id: string; fullName: string; id_repo?: string },
     accessToken: string,
+    updateProgress?: (progress: number) => Promise<void>,
   ) {
     this.logger.log(`Starting scan ${scanId} for ${repository.fullName}`);
 
@@ -109,9 +150,12 @@ export class ScansService {
       },
     });
 
+    if (updateProgress) await updateProgress(20);
+
     try {
       // Step A: Fetch full file tree from GitHub API
       const files = await this.fetchRepositoryFiles(repository.fullName, accessToken);
+      if (updateProgress) await updateProgress(40);
 
       // Step B: Content fetcher closure with error-handling and caching
       const getFileContent = async (path: string): Promise<string | null> => {
@@ -140,9 +184,19 @@ export class ScansService {
 
       // Step D: Calculate aggregate Risk Score (0-100)
       const riskScore = this.calculateRiskScore(findings);
+      if (updateProgress) await updateProgress(70);
 
       // Step E: Store findings in database with initial heuristic or AI explanations
+      // 🛡️ Duplicate findings detection: Skip duplicates with same (title + filePath + lineNumber)
+      const seenFindings = new Set<string>();
+
       for (const f of findings) {
+        const findingKey = `${f.title}:${f.filePath}:${f.lineNumber ?? 0}`;
+        if (seenFindings.has(findingKey)) {
+          continue; // Duplicate finding skip করা হলো
+        }
+        seenFindings.add(findingKey);
+
         const aiResult = await this.aiService.explainFinding({
           title: f.title,
           description: f.description,
@@ -167,6 +221,8 @@ export class ScansService {
           },
         });
       }
+
+      if (updateProgress) await updateProgress(95);
 
       // Step F: Mark scan as COMPLETED
       await this.prisma.scan.update({
