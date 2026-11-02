@@ -2,9 +2,9 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ScansController } from './scans.controller';
 import { ScansService } from './scans.service';
-import { ScanProcessor } from './scan.processor';
 import { AiModule } from '../ai/ai.module';
 import { EncryptionService } from '../common/encryption.service';
+import { ScanProcessor } from './scan.processor';
 
 @Module({
   imports: [
