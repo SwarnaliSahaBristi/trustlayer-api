@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
@@ -16,6 +17,17 @@ import { DashboardModule } from './dashboard/dashboard.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+    }),
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        connection: {
+          host: config.get<string>('REDIS_HOST', 'localhost'),
+          port: config.get<number>('REDIS_PORT', 6379),
+          password: config.get<string>('REDIS_PASSWORD') || undefined,
+          tls: config.get<string>('REDIS_TLS') === 'true' ? {} : undefined,
+        },
+      }),
     }),
     // 🛡️ Rate Limiting: 60 seconds এ সর্বোচ্চ 100 টি রিকোয়েস্ট (DoS/Brute-force protection)
     ThrottlerModule.forRoot([
@@ -42,4 +54,4 @@ import { DashboardModule } from './dashboard/dashboard.module';
     },
   ],
 })
-export class AppModule {}
+export class AppModule { }

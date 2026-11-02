@@ -1,13 +1,20 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { ScansController } from './scans.controller';
 import { ScansService } from './scans.service';
 import { AiModule } from '../ai/ai.module';
 import { EncryptionService } from '../common/encryption.service';
+import { ScanProcessor } from './scan.processor';
 
 @Module({
-  imports: [AiModule],
+  imports: [
+    BullModule.registerQueue({
+      name: 'scan-queue',
+    }),
+    AiModule,
+  ],
   controllers: [ScansController],
-  providers: [ScansService, EncryptionService],
+  providers: [ScansService, EncryptionService, ScanProcessor],
   exports: [ScansService],
 })
 export class ScansModule {}
